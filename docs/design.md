@@ -26,6 +26,7 @@ binary.
 ## Requirements
 
 - Decide in under 50 ms per action on a laptop (a hook runs before every tool call).
+- An allow costs the caller nothing: no output, no tokens. A deny costs one short reason that names the target and the way forward, so the next step is a single retry. A false denial is a defect. The first rule ships blocking because every case of the bash guard's suite passes against it; every later rule runs in shadow mode and its disagreements are counted before it may block. Anything the engine cannot resolve, a path after a `cd` to a variable or a filename built at runtime, is unknown, and unknown fails open.
 - Single static binary, no runtime dependencies; `git` on PATH is the one external tool.
 - Every allow and deny is appended to a JSONL log with actor, session, action, intent, decision, reason.
 - Approvals are per session, exact-match, and expire after 12 hours.
@@ -55,7 +56,7 @@ shell wrapper and a CI lint follow.
 ## Flows
 
 1. Hook: stdin JSON → action → parse → classify → evaluate → decision JSON on stdout, one log line appended.
-2. Approval: `warden approve --session <id> "<user's words>" <path|command>` records an exact key; the next check for that key in that session allows.
+2. Approval: `warden approve --session <id> "<user's words>" <path>` records the resolved path; the next check that would deny that path in that session allows it, for 12 hours.
 
 ## Failure modes
 

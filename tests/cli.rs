@@ -2,8 +2,13 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn check(stdin: &str) -> (i32, String, String) {
+    check_with_env(stdin, &[])
+}
+
+fn check_with_env(stdin: &str, env: &[(&str, &str)]) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_warden"))
         .arg("check")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -48,6 +53,75 @@ fn an_allowed_command_is_silent_and_exits_zero() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "");
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn a_shell_rewrite_of_a_tracked_file_is_denied_with_json_and_exit_two() {
+    let dir = std::env::temp_dir().join(format!("warden-cli-deny-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(dir.join("tracked.txt"), "x\n").unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-q", "-m", "i"]] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let input = format!(
+        r#"{{"session_id":"s","cwd":"{}","tool_name":"Bash","tool_input":{{"command":"echo y > tracked.txt"}}}}"#,
+        dir.display()
+    );
+    let (code, stdout, stderr) = check(&input);
+    assert_eq!(code, 2);
+    assert_eq!(stderr, "");
+    assert!(stdout.starts_with(r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":""#));
+    assert!(stdout.contains("tracked.txt is tracked by git"));
+
+    let (code, stdout, _) = check_with_env(&input, &[("WARDEN_ALLOW_SHELL_WRITES", "1")]);
+    assert_eq!(code, 0, "the override lets the same command through");
+    assert_eq!(stdout, "");
+
+    let state = dir.join("state");
+    let state_env = [("WARDEN_STATE_DIR", state.to_str().unwrap())];
+    let (code, _, _) = check_with_env(&input, &state_env);
+    assert_eq!(code, 2, "no approval yet");
+    let out = Command::new(env!("CARGO_BIN_EXE_warden"))
+        .current_dir(&dir)
+        .envs(state_env.iter().copied())
+        .args([
+            "approve",
+            "--session",
+            "s",
+            "user said: yes, overwrite it",
+            "tracked.txt",
+        ])
+        .output()
+        .expect("run warden approve");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("approved: "));
+    let (code, stdout, _) = check_with_env(&input, &state_env);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 0, "the approved path is allowed in the same session");
+    assert_eq!(stdout, "");
 }
 
 #[test]
