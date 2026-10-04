@@ -192,8 +192,8 @@ pub(crate) mod tests {
     fn canon_keeps_the_missing_tail_of_a_path_that_does_not_exist_yet() {
         let r = TempRepo::new("canon-missing");
         assert_eq!(
-            canon(Path::new(".claude/changelog/x.md"), &r.0),
-            r.0.join(".claude/changelog/x.md")
+            canon(Path::new("docs/notes/deeper/x.md"), &r.0),
+            r.0.join("docs/notes/deeper/x.md")
         );
     }
 
