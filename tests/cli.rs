@@ -24,6 +24,23 @@ fn check(stdin: &str) -> (i32, String, String) {
 }
 
 #[test]
+fn check_help_states_the_exit_code_contract() {
+    let out = Command::new(env!("CARGO_BIN_EXE_warden"))
+        .args(["check", "--help"])
+        .output()
+        .expect("run warden check --help");
+    let help = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "Allow: prints nothing and exits 0.",
+        "Deny: prints the hook decision JSON on stdout and exits 2.",
+        "Unreadable input: warns on stderr, exits 0, and the tool runs.",
+        "A tool warden does not judge: silent, exits 0, and the tool runs.",
+    ] {
+        assert!(help.contains(line), "help is missing: {line}");
+    }
+}
+
+#[test]
 fn an_allowed_command_is_silent_and_exits_zero() {
     let (code, stdout, stderr) = check(
         r#"{"session_id":"s","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
