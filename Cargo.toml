@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "Policy engine for shell commands and file writes: allow or deny with a reason, and log every answer"
 license = "Apache-2.0"
 repository = "https://github.com/bolexs/warden"
+readme = "README.md"
 keywords = ["policy", "shell", "guard", "agent", "hook"]
 categories = ["command-line-utilities", "development-tools"]
 

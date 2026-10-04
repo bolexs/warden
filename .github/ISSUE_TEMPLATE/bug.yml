@@ -1,0 +1,26 @@
+name: Bug report
+description: A wrong decision, a parse gap, or a crash
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What warden decided, and what it should have decided.
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Hook input
+      description: The exact JSON warden read on stdin, or the exact command text. Remove anything private.
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `warden --version`, and your OS.
+    validations:
+      required: true

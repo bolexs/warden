@@ -23,7 +23,8 @@ enum Cmd {
         long_about = "Reads one PreToolUse hook request as JSON on stdin.\n\
             Allow: prints nothing and exits 0.\n\
             Deny: prints the hook decision JSON on stdout and exits 2.\n\
-            Unreadable or unjudged input: warns on stderr, exits 0, and the tool runs."
+            Unreadable input: warns on stderr, exits 0, and the tool runs.\n\
+            A tool warden does not judge: silent, exits 0, and the tool runs."
     )]
     Check,
 }
