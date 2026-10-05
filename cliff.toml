@@ -26,7 +26,7 @@ render_always = true
 conventional_commits = true
 filter_unconventional = true
 commit_parsers = [
-    { body = ".*security", group = "<!-- 0 -->Security" },
+    { message = "^\\w+\\(security\\)", group = "<!-- 0 -->Security" },
     { message = "^feat", group = "<!-- 1 -->Added" },
     { message = "^fix", group = "<!-- 2 -->Fixed" },
     { message = "^perf", group = "<!-- 3 -->Performance" },
