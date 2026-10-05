@@ -4,6 +4,7 @@ use tree_sitter::{Node, Parser};
 pub struct Parsed {
     pub commands: Vec<SimpleCommand>,
     pub had_error: bool,
+    pub scopes: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -12,6 +13,7 @@ pub struct SimpleCommand {
     pub args: Vec<Word>,
     pub redirects: Vec<Redirect>,
     pub heredocs: Vec<String>,
+    pub scope: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,40 +38,53 @@ pub fn parse(text: &str) -> Parsed {
         return Parsed {
             commands: Vec::new(),
             had_error: true,
+            scopes: 0,
         };
     };
     let root = tree.root_node();
     let mut parsed = Parsed {
         commands: Vec::new(),
         had_error: root.has_error(),
+        scopes: 0,
     };
-    walk(root, text.as_bytes(), &mut parsed);
+    walk(root, text.as_bytes(), &mut parsed, 0);
     parsed
 }
 
-fn walk(node: Node, src: &[u8], parsed: &mut Parsed) {
+fn walk(node: Node, src: &[u8], parsed: &mut Parsed, scope: u32) {
     match node.kind() {
         "command" => {
-            let cmd = command(node, src, parsed);
+            let cmd = command(node, src, parsed, scope);
             parsed.commands.push(cmd);
         }
-        "redirected_statement" => redirected(node, src, parsed),
+        "redirected_statement" => redirected(node, src, parsed, scope),
+        "subshell" | "command_substitution" => {
+            parsed.scopes += 1;
+            let inner = parsed.scopes;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                walk(child, src, parsed, inner);
+            }
+        }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk(child, src, parsed);
+                walk(child, src, parsed, scope);
             }
         }
     }
 }
 
-fn command(node: Node, src: &[u8], parsed: &mut Parsed) -> SimpleCommand {
-    let mut cmd = SimpleCommand::default();
+fn command(node: Node, src: &[u8], parsed: &mut Parsed, scope: u32) -> SimpleCommand {
+    let mut cmd = SimpleCommand {
+        scope,
+        ..SimpleCommand::default()
+    };
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
             "command_name" => {
-                walk(child, src, parsed);
+                walk(child, src, parsed, scope);
                 let mut inner = child.walk();
                 cmd.name = child
                     .named_children(&mut inner)
@@ -77,12 +92,12 @@ fn command(node: Node, src: &[u8], parsed: &mut Parsed) -> SimpleCommand {
                     .map(|n| word(n, src).text);
             }
             "file_redirect" => {
-                let r = redirect(child, src, parsed);
+                let r = redirect(child, src, parsed, scope);
                 cmd.redirects.push(r);
             }
-            "herestring_redirect" | "variable_assignment" => walk(child, src, parsed),
+            "herestring_redirect" | "variable_assignment" => walk(child, src, parsed, scope),
             _ => {
-                walk(child, src, parsed);
+                walk(child, src, parsed, scope);
                 cmd.args.push(word(child, src));
             }
         }
@@ -90,12 +105,16 @@ fn command(node: Node, src: &[u8], parsed: &mut Parsed) -> SimpleCommand {
     cmd
 }
 
-fn redirected(node: Node, src: &[u8], parsed: &mut Parsed) {
-    let before = parsed.commands.len();
-    if let Some(body) = node.child_by_field_name("body") {
-        walk(body, src, parsed);
+fn redirected(node: Node, src: &[u8], parsed: &mut Parsed, scope: u32) {
+    let mut before = parsed.commands.len();
+    let body = node.child_by_field_name("body");
+    if let Some(body) = body {
+        walk(body, src, parsed, scope);
     }
     let end = parsed.commands.len();
+    if body.is_some_and(|b| matches!(b.kind(), "list" | "pipeline")) && end > before {
+        before = end - 1;
+    }
     let mut redirects = Vec::new();
     let mut heredocs = Vec::new();
     let mut deferred = Vec::new();
@@ -104,7 +123,7 @@ fn redirected(node: Node, src: &[u8], parsed: &mut Parsed) {
     for child in node.children(&mut cursor) {
         match child.kind() {
             "file_redirect" => {
-                let r = redirect(child, src, parsed);
+                let r = redirect(child, src, parsed, scope);
                 redirects.push(r);
             }
             "heredoc_redirect" => {
@@ -113,11 +132,11 @@ fn redirected(node: Node, src: &[u8], parsed: &mut Parsed) {
                 for part in child.children(&mut inner) {
                     match part.kind() {
                         "heredoc_body" => {
-                            walk(part, src, parsed);
+                            walk(part, src, parsed, scope);
                             heredocs.push(text(part, src).to_string());
                         }
                         "file_redirect" => {
-                            let r = redirect(part, src, parsed);
+                            let r = redirect(part, src, parsed, scope);
                             redirects.push(r);
                         }
                         "heredoc_start" | "heredoc_end" => {}
@@ -145,10 +164,11 @@ fn redirected(node: Node, src: &[u8], parsed: &mut Parsed) {
             args: dropped,
             redirects,
             heredocs,
+            scope,
         });
     }
     for part in deferred {
-        walk(part, src, parsed);
+        walk(part, src, parsed, scope);
     }
 }
 
@@ -181,7 +201,7 @@ fn push_words(gap: &str, words: &mut Vec<Word>) {
     }));
 }
 
-fn redirect(node: Node, src: &[u8], parsed: &mut Parsed) -> Redirect {
+fn redirect(node: Node, src: &[u8], parsed: &mut Parsed, scope: u32) -> Redirect {
     let mut op = String::new();
     let mut descriptor = None;
     let mut target = Word {
@@ -195,7 +215,7 @@ fn redirect(node: Node, src: &[u8], parsed: &mut Parsed) -> Redirect {
         } else if child.kind() == "file_descriptor" {
             descriptor = Some(text(child, src).to_string());
         } else {
-            walk(child, src, parsed);
+            walk(child, src, parsed, scope);
             if target.text.is_empty() {
                 target = word(child, src);
             }
@@ -408,6 +428,40 @@ mod tests {
         assert_eq!(names(&p), vec![Some("a"), Some("b")]);
         for c in &p.commands {
             assert_eq!(c.redirects[0].target.text, "f");
+        }
+    }
+
+    #[test]
+    fn commands_in_a_subshell_or_substitution_carry_their_own_scope() {
+        let p = parse("(cd src && ls) && echo $(cat x) > f");
+        let scopes: Vec<(Option<&str>, u32)> = p
+            .commands
+            .iter()
+            .map(|c| (c.name.as_deref(), c.scope))
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![
+                (Some("cd"), 1),
+                (Some("ls"), 1),
+                (Some("cat"), 2),
+                (Some("echo"), 0)
+            ]
+        );
+        assert_eq!(p.scopes, 2);
+    }
+
+    #[test]
+    fn a_redirect_after_a_list_or_pipeline_belongs_to_the_last_command_only() {
+        for text in [
+            "mkdir -p build && cd build && echo x > f",
+            "a | b > f",
+            "a; b > f",
+        ] {
+            let p = parse(text);
+            let (last, rest) = p.commands.split_last().unwrap();
+            assert_eq!(last.redirects[0].target.text, "f", "{text}");
+            assert!(rest.iter().all(|c| c.redirects.is_empty()), "{text}");
         }
     }
 

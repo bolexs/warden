@@ -2,8 +2,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod approvals;
 pub mod claude;
+pub mod evidence;
+pub mod policy;
 pub mod shell;
+
+pub use policy::decide;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -41,10 +46,6 @@ pub struct Request {
 pub enum Decision {
     Allow,
     Deny { guard: String, reason: String },
-}
-
-pub fn decide(_request: &Request) -> Decision {
-    Decision::Allow
 }
 
 #[cfg(test)]

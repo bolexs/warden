@@ -342,6 +342,7 @@ name = "warden-policy"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "regex",
  "serde",
  "serde_json",
  "tree-sitter",
