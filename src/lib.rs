@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 pub mod approvals;
 pub mod claude;
 pub mod evidence;
+pub mod log;
 pub mod policy;
+pub mod shadow;
 pub mod shell;
 
 pub use policy::decide;

@@ -70,6 +70,28 @@ Anything warden cannot resolve, a path after a `cd` to a variable or a file
 name built at runtime, is unknown, and unknown is allowed. A wrong denial is a
 bug: please report the exact command.
 
+## Every decision is logged
+
+Each judged check appends one JSON line to `decisions.jsonl` in the state
+directory: when, session, actor, working directory, the action as warden saw
+it, the decision with its reason, whether shadow mode was on, and the
+milliseconds the check took. The line is written after the answer is printed
+and costs one file append. Unreadable input and tools warden does not judge
+are not logged.
+
+## Shadow mode
+
+Set `WARDEN_SHADOW=1` in the hook's environment and warden logs its real
+decision while always answering allow. Run it that way beside an existing
+guard, then compare:
+
+    warden shadow-report --since-days 7
+
+The report pairs warden's log with the engineering kit hub's write-guard
+denials by session and time, and lists every disagreement with the command
+text and the reason, so a rule earns the right to block by showing zero
+false denials in real use first.
+
 ## How it works
 
 1. The adapter turns the hook's JSON into a request: the action, the actor,
