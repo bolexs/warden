@@ -22,7 +22,7 @@ pub fn state_dir() -> PathBuf {
     }
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join(".warden"),
-        None => PathBuf::from(".warden"),
+        None => std::env::temp_dir().join("warden"),
     }
 }
 
