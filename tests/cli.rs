@@ -185,6 +185,55 @@ fn a_shell_rewrite_of_a_tracked_file_is_denied_with_json_and_exit_two() {
     );
 }
 
+fn git(args: &[&str]) {
+    assert!(Command::new("git").args(args).status().unwrap().success());
+}
+
+#[test]
+fn a_work_tree_inside_its_own_git_directory_stays_guarded() {
+    let base = std::env::temp_dir().join(format!("warden-cli-nested-{}", std::process::id()));
+    let gitdir = base.join("app.git");
+    let tree = gitdir.join("checkout");
+    let g = gitdir.to_str().unwrap();
+    git(&["init", "-q", "--bare", g]);
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("README"), "x\n").unwrap();
+    git(&["--git-dir", g, "config", "user.email", "t@t"]);
+    git(&["--git-dir", g, "config", "user.name", "t"]);
+    git(&["--git-dir", g, "config", "core.bare", "false"]);
+    git(&["--git-dir", g, "config", "core.worktree", "checkout"]);
+    let t = tree.to_str().unwrap();
+    git(&["-C", t, "add", "README"]);
+    git(&["-C", t, "commit", "-q", "-m", "i"]);
+    let input = format!(
+        r#"{{"session_id":"s","cwd":"{t}","tool_name":"Bash","tool_input":{{"command":"echo y > README"}}}}"#
+    );
+    let (code, _, _) = check(&input);
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn a_work_tree_named_only_by_the_environment_stays_guarded() {
+    let base = std::env::temp_dir().join(format!("warden-cli-bare-{}", std::process::id()));
+    let bare = base.join("repo.git");
+    let tree = base.join("home");
+    std::fs::create_dir_all(&tree).unwrap();
+    let (b, t) = (bare.to_str().unwrap(), tree.to_str().unwrap());
+    git(&["init", "-q", "--bare", b]);
+    git(&["--git-dir", b, "config", "user.email", "t@t"]);
+    git(&["--git-dir", b, "config", "user.name", "t"]);
+    std::fs::write(tree.join("dot.txt"), "x\n").unwrap();
+    git(&["--git-dir", b, "--work-tree", t, "add", "dot.txt"]);
+    git(&["--git-dir", b, "--work-tree", t, "commit", "-q", "-m", "i"]);
+    let input = format!(
+        r#"{{"session_id":"s","cwd":"{t}","tool_name":"Bash","tool_input":{{"command":"echo y > dot.txt"}}}}"#
+    );
+    let (code, _, _) = check_with_env(&input, &[("GIT_DIR", b), ("GIT_WORK_TREE", t)]);
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(code, 2);
+}
+
 #[test]
 fn an_unjudged_tool_is_silent_and_exits_zero() {
     let (code, stdout, stderr) = check(r#"{"tool_name":"Grep","tool_input":{"pattern":"x"}}"#);
