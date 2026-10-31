@@ -70,6 +70,21 @@ Anything warden cannot resolve, a path after a `cd` to a variable or a file
 name built at runtime, is unknown, and unknown is allowed. A wrong denial is a
 bug: please report the exact command.
 
+A git repository inside the agent's scratch directory is treated as
+throwaway when its git directory is also inside the scratch directory: writes
+to its tracked files are allowed. A worktree of a real repository parked there
+is still guarded. The scratch directory is the host's `scratchpad_dir`; a
+relative path, the root, your home directory or a parent of it, a symlink, or
+a path inside a git repository is ignored.
+
+## Known limits
+
+- A variable assigned earlier in the same command is not resolved, so
+  `F=src/a.ts; cp new $F` is judged as unknown and allowed. Resolving it
+  safely is planned, through shadow mode first.
+- A repository moved into the scratch directory counts as throwaway there.
+- Only the shell-rewrite rule exists so far. The other guards are next.
+
 ## Every decision is logged
 
 Each judged check appends one JSON line to `decisions.jsonl` in the state
@@ -99,8 +114,10 @@ false denials in real use first.
 2. The parser turns command text into simple commands with their arguments,
    redirects and heredoc bodies, using tree-sitter-bash. Text inside quotes is
    never mistaken for a path. Tokens the grammar drops are recovered.
-3. The policy classifies each command and decides. A decision log is the
-   next milestone.
+3. The policy classifies each command and decides. A path with no `.git` or
+   `HEAD` in any parent directory needs no git call, unless the hook's
+   environment sets one of git's repository variables (`GIT_DIR`,
+   `GIT_WORK_TREE` and the rest); every decision is logged.
 
 ## Develop
 

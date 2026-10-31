@@ -42,6 +42,7 @@ pub fn decide(request: &Request) -> Decision {
             }
             let mut judge = Judge {
                 session: request.session.clone(),
+                scratch: request.scratch.as_deref().and_then(evidence::scratch_root),
             };
             judge
                 .command(text, Some(request.cwd.clone()))
@@ -53,6 +54,7 @@ pub fn decide(request: &Request) -> Decision {
 
 struct Judge {
     session: String,
+    scratch: Option<PathBuf>,
 }
 
 impl Judge {
@@ -106,7 +108,16 @@ impl Judge {
             .collect();
         evidence::tracked_files(&candidates)
             .into_iter()
-            .find(|abs| !approvals::approved(&self.session, abs))
+            .find(|abs| !approvals::approved(&self.session, abs) && !self.throwaway(abs))
+    }
+
+    fn throwaway(&self, abs: &Path) -> bool {
+        let Some(scratch) = &self.scratch else {
+            return false;
+        };
+        abs.starts_with(scratch)
+            && evidence::repo_root(scratch).is_none()
+            && evidence::common_dir(abs).is_some_and(|common| common.starts_with(scratch))
     }
 }
 
@@ -626,6 +637,93 @@ mod tests {
         assert!(reason.contains("one file at a time"));
         assert!(reason.contains("warden approve --session s"));
         assert!(reason.split_whitespace().count() < 60);
+    }
+
+    fn judge_with_scratch(cmd: &str, cwd: &Path, scratch: &Path) -> Decision {
+        decide(&Request {
+            action: Action::Command { text: cmd.into() },
+            actor: Actor {
+                name: "main".into(),
+                read_only: false,
+            },
+            session: "s".into(),
+            cwd: cwd.to_path_buf(),
+            scratch: Some(scratch.to_path_buf()),
+            mode: Mode::Act,
+        })
+    }
+
+    #[test]
+    fn a_clone_inside_the_scratchpad_is_throwaway() {
+        let scratch = std::env::temp_dir().join(format!("warden-scratch-{}", std::process::id()));
+        fs::create_dir_all(&scratch).unwrap();
+        let real = repo();
+        let clone = scratch.join("clone");
+        assert!(
+            std::process::Command::new("git")
+                .args(["clone", "-q"])
+                .arg(&real.0)
+                .arg(&clone)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let cmd = "echo x > src/a.ts";
+        let in_scratch = judge_with_scratch(cmd, &clone, &scratch);
+        let without = judge(cmd, &clone);
+        let _ = fs::remove_dir_all(&scratch);
+        assert_eq!(in_scratch, Decision::Allow);
+        assert!(matches!(without, Decision::Deny { .. }));
+    }
+
+    #[test]
+    fn a_scratch_value_that_would_cover_real_repositories_is_ignored() {
+        let real = repo();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        let link = std::env::temp_dir().join(format!("warden-scratch-link-{}", std::process::id()));
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(real.0.parent().unwrap(), &link).unwrap();
+        let cmd = "echo x > src/a.ts";
+        for scratch in [
+            PathBuf::from("/"),
+            PathBuf::new(),
+            PathBuf::from("."),
+            home,
+            real.0.clone(),
+            link.clone(),
+        ] {
+            assert!(
+                matches!(
+                    judge_with_scratch(cmd, &real.0, &scratch),
+                    Decision::Deny { .. }
+                ),
+                "scratch {} must not exempt a real repository",
+                scratch.display()
+            );
+        }
+        let _ = fs::remove_file(&link);
+    }
+
+    #[test]
+    fn a_worktree_of_a_real_repository_parked_in_the_scratchpad_stays_guarded() {
+        let scratch =
+            std::env::temp_dir().join(format!("warden-scratch-wt-{}", std::process::id()));
+        fs::create_dir_all(&scratch).unwrap();
+        let real = repo();
+        let wt = scratch.join("wt");
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&real.0)
+                .args(["worktree", "add", "-q", "--detach"])
+                .arg(&wt)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let decision = judge_with_scratch("echo x > src/a.ts", &wt, &scratch);
+        let _ = fs::remove_dir_all(&scratch);
+        assert!(matches!(decision, Decision::Deny { .. }));
     }
 
     #[test]
