@@ -52,10 +52,29 @@ pub fn is_tracked_file(path: &Path) -> bool {
     !tracked_files(&[path.to_path_buf()]).is_empty()
 }
 
+const REPO_ENV: [&str; 15] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 pub fn tracked_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let inherited = REPO_ENV.iter().any(|v| std::env::var_os(v).is_some());
     let mut groups: HashMap<&Path, Vec<(&Path, &PathBuf)>> = HashMap::new();
     for path in paths {
-        if path.is_dir() {
+        if path.is_dir() || (!inherited && !may_be_in_repository(path)) {
             continue;
         }
         let Some(dir) = existing_ancestor_dir(path) else {
@@ -96,6 +115,49 @@ fn existing_ancestor_dir(path: &Path) -> Option<&Path> {
         dir = dir.parent()?;
     }
     Some(dir)
+}
+
+fn may_be_in_repository(path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .any(|dir| present(&dir.join(".git")) || present(&dir.join("HEAD")))
+}
+
+fn present(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+pub fn common_dir(path: &Path) -> Option<PathBuf> {
+    let dir = existing_ancestor_dir(path)?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let common = text.trim_end();
+    if common.is_empty() {
+        return None;
+    }
+    Some(canon(Path::new(common), Path::new("/")))
+}
+
+pub fn scratch_root(raw: &Path) -> Option<PathBuf> {
+    let raw: PathBuf = raw.components().collect();
+    let link = std::fs::symlink_metadata(&raw).is_ok_and(|m| m.file_type().is_symlink());
+    if !raw.is_absolute() || link {
+        return None;
+    }
+    let scratch = canon(&raw, Path::new("/"));
+    let home = std::env::var_os("HOME").map(|h| canon(Path::new(&h), Path::new("/")));
+    if scratch.parent().is_none() || home.is_some_and(|h| h.starts_with(&scratch)) {
+        return None;
+    }
+    Some(scratch)
 }
 
 pub fn is_tracked(repo: &Path, path: &Path) -> bool {
@@ -260,6 +322,70 @@ pub(crate) mod tests {
         assert_eq!(found.len(), 2);
         assert!(found.contains(&r.0.join("src/b.ts")));
         assert!(found.contains(&r.0.join("Makefile")));
+    }
+
+    #[test]
+    fn a_git_entry_or_head_in_any_parent_means_a_repository_may_be_there() {
+        let r = TempRepo::new("may-be-repo");
+        assert!(may_be_in_repository(&r.0.join("a/b/c.txt")));
+        let outside = std::env::temp_dir().join(format!("warden-maybe-{}", std::process::id()));
+        fs::create_dir_all(outside.join("plain")).unwrap();
+        assert!(!may_be_in_repository(&outside.join("plain/x.txt")));
+        fs::create_dir_all(outside.join("gitdir")).unwrap();
+        std::os::unix::fs::symlink("refs/heads/nowhere", outside.join("gitdir/HEAD")).unwrap();
+        assert!(may_be_in_repository(&outside.join("gitdir/work/x.txt")));
+        fs::create_dir_all(outside.join("linked")).unwrap();
+        fs::write(outside.join("linked/.git"), "gitdir: /nowhere\n").unwrap();
+        assert!(may_be_in_repository(&outside.join("linked/x.txt")));
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_scratch_root_is_never_home_a_parent_of_it_or_a_symlink() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(scratch_root(&home), None);
+        assert_eq!(scratch_root(home.parent().unwrap()), None);
+        let base = std::env::temp_dir().join(format!("warden-scratch-root-{}", std::process::id()));
+        fs::create_dir_all(base.join("real")).unwrap();
+        let link = base.join("link");
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(base.join("real"), &link).unwrap();
+        assert_eq!(scratch_root(&link), None);
+        let mut slashed = link.clone().into_os_string();
+        slashed.push("/");
+        assert_eq!(scratch_root(Path::new(&slashed)), None);
+        assert_eq!(
+            scratch_root(&base.join("real")),
+            Some(base.join("real").canonicalize().unwrap())
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_repository_variables_are_the_ones_git_lists() {
+        let out = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .unwrap();
+        let mut theirs: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect();
+        let mut ours: Vec<String> = REPO_ENV.iter().map(|s| s.to_string()).collect();
+        theirs.sort();
+        ours.sort();
+        assert_eq!(ours, theirs);
+    }
+
+    #[test]
+    fn the_common_dir_of_a_repository_is_its_git_directory() {
+        let r = TempRepo::new("common-dir");
+        assert_eq!(common_dir(&r.0.join("src/new.txt")), Some(r.0.join(".git")));
+        let outside = std::env::temp_dir().join(format!("warden-common-{}", std::process::id()));
+        fs::create_dir_all(&outside).unwrap();
+        assert_eq!(common_dir(&outside.join("x.txt")), None);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
